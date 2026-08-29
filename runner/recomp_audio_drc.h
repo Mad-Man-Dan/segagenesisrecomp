@@ -50,14 +50,15 @@ typedef struct {
     double em_high_ms;      /* above this = overflow emergency (default 105)    */
     /* --- Phase-1 stall concealment (brief transition/startup producer stalls) --- */
     double preroll_ms;      /* initial prime cushion; 0 => prime at target_ms.      *
-                             * A boot pre-roll hides the cold-start hitch for free   *
-                             * (latency before gameplay is irrelevant); the servo    *
-                             * drains the excess down to target over time.           */
+                             * Values above target trade startup synchronization for *
+                             * extra cold-start protection; the servo later drains   *
+                             * the excess down to target.                            */
     int    stretch_enable;  /* 1 = conceal underruns by pitch-preserving loop of the *
                              * most recent audio instead of fading to silence (1)    */
     double stretch_min_ms;  /* min loop period / correlation search floor (5)        */
     double stretch_max_ms;  /* max loop period / correlation search ceil  (25)       */
     double stretch_xfade_ms;/* loop-wrap crossfade length (4)                        */
+    double stretch_limit_ms;/* max concealment per stall before fading (20; 0=unlimited) */
 } rab_config;
 
 typedef struct {
@@ -98,6 +99,7 @@ typedef struct rab_bridge {
     double loop_start;      /* source-frame index: start of the looped region  */
     double loop_len;        /* looped region length in source frames           */
     double loop_pos;        /* fractional read cursor within the looped region */
+    uint64_t stretch_episode_frames; /* host frames concealed this stall       */
 
     rab_stats stats;
 } rab_bridge;
@@ -174,6 +176,7 @@ void rab_config_defaults(rab_config *c) {
     c->stretch_min_ms   = 5.0;
     c->stretch_max_ms   = 25.0;
     c->stretch_xfade_ms = 4.0;
+    c->stretch_limit_ms = 20.0;
 }
 
 int rab_init(rab_bridge *b, const rab_config *cfg) {
@@ -247,6 +250,7 @@ void rab_reset(rab_bridge *b) {
                     ? b->cfg.preroll_ms : b->cfg.target_ms;
     b->concealing = 0;
     b->loop_start = b->loop_len = b->loop_pos = 0.0;
+    b->stretch_episode_frames = 0;
     memset(b->last_out, 0, sizeof(b->last_out));
     memset(&b->stats, 0, sizeof(b->stats));
 }
@@ -388,6 +392,7 @@ void rab_pull(rab_bridge *b, int16_t *out, int frames) {
         if (have) {
             /* live forward play; caught up to real audio, so leave conceal mode */
             b->concealing = 0;
+            b->stretch_episode_frames = 0;
             double fr = b->out_pos - (double)i;
             int phase = (int)(fr * b->cfg.phases);
             if (phase >= b->cfg.phases) phase = b->cfg.phases - 1;
@@ -401,6 +406,10 @@ void rab_pull(rab_bridge *b, int16_t *out, int frames) {
             b->out_pos += step;             /* advance only when we consumed live */
             delivering = 1;
         } else if (b->primed && b->cfg.stretch_enable
+                   && (b->cfg.stretch_limit_ms <= 0.0
+                       || b->stretch_episode_frames
+                          < (uint64_t)(b->cfg.host_rate
+                                       * b->cfg.stretch_limit_ms / 1000.0))
                    && (int64_t)b->in_count > (int64_t)(2 * b->half + 4)) {
             /* Producer stalled: conceal by looping the most recent audio,
              * pitch-aligned, instead of fading to silence. out_pos is held at the
@@ -429,6 +438,7 @@ void rab_pull(rab_bridge *b, int16_t *out, int frames) {
             b->loop_pos += step;
             if (b->loop_pos >= loop_end) b->loop_pos -= b->loop_len;
             b->stats.stretch_frames++;
+            b->stretch_episode_frames++;
             delivering = 1;
         } else {
             /* not primed, or no history to loop: hold last sample, fade to silence */

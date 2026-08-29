@@ -143,3 +143,18 @@ genesisrecomp_register_test(genesis_vdp_latch_test)
 target_include_directories(genesis_vdp_latch_test PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../runner/video"
 )
+
+# ---------------------------------------------------------------------------
+# audio_drc_test — startup priming and bounded underrun concealment.
+# Prevents delivery-layer latency regressions and indefinite held tones.
+# ---------------------------------------------------------------------------
+add_executable(audio_drc_test
+    harness/audio_drc_test.c
+)
+genesisrecomp_register_test(audio_drc_test)
+target_include_directories(audio_drc_test PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../runner"
+)
+if(NOT MSVC)
+    target_link_libraries(audio_drc_test PRIVATE m)
+endif()

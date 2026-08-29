@@ -4,8 +4,8 @@
 #include <string.h>
 
 /* Shared clock-domain bridge: persistent band-limited polyphase resampler + a
- * P-only normalized-fill controller, plus Phase-1 stall concealment (boot
- * pre-roll + pitch-preserving underrun loop). Replaces the old nearest-neighbor
+ * P-only normalized-fill controller, plus bounded pitch-preserving stall
+ * concealment. Replaces the old nearest-neighbor
  * ±0.5% servo (which crackled because every correction dropped/duplicated
  * samples) and the >8-frame hard-drop. See recomp_audio_drc.h. This is the only
  * TU that pulls in the implementation. */
@@ -143,12 +143,13 @@ int audio_init(int psg_sample_rate)
     cfg.channels    = 2;
     cfg.source_rate = (double)psg_sample_rate; /* internal FM+PSG mix rate */
     cfg.host_rate   = (double)got.freq;         /* device rate (48 kHz) */
-    /* Phase-1 stall concealment: a ~200 ms boot pre-roll hides the cold-start
-     * hitch for free (the servo drains the excess down to target over time),
-     * and stretch_enable (default 1) conceals brief producer stalls by a
-     * pitch-preserving loop of recent audio instead of fading to silence. */
-    cfg.preroll_ms     = 200.0;
-    cfg.stretch_enable = 1;     /* conceal on (defaults to 1; pinned explicit) */
+    /* Prime at the normal 50 ms controller target. The former 200 ms boot
+     * cushion made early logos and attract scenes visibly lead their music.
+     * Keep pitch-preserving concealment for tiny scheduler stalls, but cap an
+     * episode so a longer stall fades instead of audibly holding a tone. */
+    cfg.preroll_ms       = 0.0;  /* 0 => target_ms (50 ms), not zero buffering */
+    cfg.stretch_enable   = 1;
+    cfg.stretch_limit_ms = 20.0;
     if (rab_init(&s_bridge, &cfg) != 0) {
         fprintf(stderr, "audio: rab_init (DRC bridge) failed\n");
         SDL_CloseAudioDevice(s_dev); s_dev = 0;
@@ -160,12 +161,13 @@ int audio_init(int psg_sample_rate)
     s_stats.min_queued_bytes = UINT32_MAX;  /* low-water: nothing sampled yet */
 
     /* No manual silence prime: the bridge holds output muted until its ring
-     * reaches the pre-roll fill, then fades in (clean startup, no edge click). */
+     * reaches the configured prime fill, then fades in without an edge click. */
     SDL_PauseAudioDevice(s_dev, 0);
     fprintf(stderr, "[audio] DRC bridge: %d Hz internal -> %d Hz device "
-            "(preroll %.0f ms, conceal %s)\n",
-            psg_sample_rate, got.freq, cfg.preroll_ms,
-            cfg.stretch_enable ? "on" : "off");
+            "(prime %.0f ms, conceal %s/%.0f ms max)\n",
+            psg_sample_rate, got.freq,
+            cfg.preroll_ms > cfg.target_ms ? cfg.preroll_ms : cfg.target_ms,
+            cfg.stretch_enable ? "on" : "off", cfg.stretch_limit_ms);
     return 0;
 }
 
