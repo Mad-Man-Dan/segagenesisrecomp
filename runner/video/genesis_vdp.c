@@ -92,6 +92,10 @@ void gvdp_reset(GVDP *v)
     v->vint_pending = 0;
     v->hint_counter = 0;
     v->scanline = 0;
+    v->vscroll_latch[0] = v->vsram[0];
+    v->vscroll_latch[1] = v->vsram[1];
+    v->window_x_latch = REG_WINDOW_X(v);
+    v->window_y_latch = REG_WINDOW_Y(v);
     v->dma_fill_pending = 0;
     s_pending_68k_stall = 0;
     /* Sensible auto-increment default; games set it explicitly. */
@@ -491,6 +495,28 @@ void gvdp_capacity_metrics_reset(void)
     memset(&s_capacity_metrics, 0, sizeof(s_capacity_metrics));
 }
 
+void gvdp_latch_scanline_state(GVDP *v)
+{
+    /* On real hardware these values are sampled after active output begins,
+     * not at our scheduler's line boundary. The 68K slice runs between those
+     * two points. Sampling after it prevents writes from changing the line
+     * already rendered, while still making them visible on the next line.
+     *
+     * Display-disabled periods intentionally retain the previous vertical
+     * scroll latch. Gunstar Heroes relies on that behavior while rebuilding
+     * the rising-city transition; accepting its off-screen VSRAM writes here
+     * exposes transient name-table rows when display resumes. */
+    if (!gvdp_display_enabled(v))
+        return;
+
+    if (!(REG_MODE3(v) & 0x04)) {
+        v->vscroll_latch[0] = v->vsram[0];
+        v->vscroll_latch[1] = v->vsram[1];
+    }
+    v->window_x_latch = REG_WINDOW_X(v);
+    v->window_y_latch = REG_WINDOW_Y(v);
+}
+
 GVDPCapacityMetrics gvdp_capacity_metrics_get(void)
 {
     return s_capacity_metrics;
@@ -743,12 +769,12 @@ int gvdp_render_scanline(GVDP *v, int line, uint8_t *out)
      * double-res units (the game scrolls each split-screen viewport with
      * these). */
     int vs_mask = im2 ? 0x7FF : 0x3FF;
-    int full_vs_a = v->vsram[0] & vs_mask;
-    int full_vs_b = v->vsram[1] & vs_mask;
+    int full_vs_a = v->vscroll_latch[0] & vs_mask;
+    int full_vs_b = v->vscroll_latch[1] & vs_mask;
 
     /* These registers cannot change while a completed scanline is rendered.
      * Resolve their row-invariant portions once rather than once per pixel. */
-    unsigned wx = REG_WINDOW_X(v), wy = REG_WINDOW_Y(v);
+    unsigned wx = v->window_x_latch, wy = v->window_y_latch;
     int window_x = (wx & 0x1F) * 16;
     int window_y = (wy & 0x1F) * 8;
     int window_h_right = (wx & 0x80) != 0;

@@ -87,6 +87,15 @@ typedef struct GVDP {
     uint16_t hint_counter;                     /* counts down reg[10] per line */
     uint16_t scanline;                         /* current raster line          */
 
+    /* Raster-visible scroll/window latches. VSRAM and the window position
+     * registers are sampled by the VDP before a scanline is drawn; writes made
+     * later in that CPU slice must not retroactively change the whole line.
+     * Keeping these in machine state also makes mid-transition save/load
+     * deterministic. */
+    uint16_t vscroll_latch[2];                 /* full-plane A/B vertical scroll */
+    uint8_t  window_x_latch;
+    uint8_t  window_y_latch;
+
     /* Pending DMA (fill/copy) state, serviced incrementally. */
     uint8_t  dma_fill_pending;
 
@@ -207,8 +216,10 @@ int gvdp_render_scanline(GVDP *v, int line, uint8_t *out);
 /* ---- Per-frame raster timing ---------------------------------------------- */
 /* Called by the scheduler at the start of each scanline; advances the H-int
  * counter and sets/clears V-int pending at the vblank boundary. Returns a mask
- * of interrupts that should fire this line. */
+ * of interrupts that should fire this line. The latch call follows the 68K
+ * slice and samples state for the next scanline. */
 enum { GVDP_IRQ_HBLANK = 1, GVDP_IRQ_VBLANK = 2 };
 unsigned gvdp_begin_scanline(GVDP *v, int line);
+void     gvdp_latch_scanline_state(GVDP *v);
 
 #endif /* GENESIS_VDP_H */

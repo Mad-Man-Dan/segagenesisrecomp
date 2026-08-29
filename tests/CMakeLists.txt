@@ -129,3 +129,17 @@ target_include_directories(m68k_interp_frame_test PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../runner"
     "${CMAKE_CURRENT_LIST_DIR}/../runner/include"
 )
+
+# ---------------------------------------------------------------------------
+# genesis_vdp_latch_test — scanline-boundary visibility for full-plane VSRAM
+# and window position registers. Guards transitions which write these while
+# display output is disabled (notably Gunstar Heroes' intro/title effects).
+# ---------------------------------------------------------------------------
+add_executable(genesis_vdp_latch_test
+    harness/genesis_vdp_latch_test.c
+    "${CMAKE_CURRENT_LIST_DIR}/../runner/video/genesis_vdp.c"
+)
+genesisrecomp_register_test(genesis_vdp_latch_test)
+target_include_directories(genesis_vdp_latch_test PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../runner/video"
+)

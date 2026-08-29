@@ -690,8 +690,6 @@ void glue_run_game_chunk(cc_u32f cycles)
 {
     if (!s_game_running || !s_game_fiber)
         return;
-    if (s_game_yielded_vblank)
-        return;
 #if SONIC_REVERSE_DEBUG
     /* Tier 2: game fiber has parked at a breakpoint. Keep DoCycles
      * no-opping until Iterate returns to main.c, where rdb_park_drain
@@ -717,6 +715,15 @@ void glue_run_game_chunk(cc_u32f cycles)
         s_irq_cycle_debt = 0;
         s_irq_cycle_debt_level = 0;
     }
+
+    /* Raster time keeps passing while the main program is parked in
+     * WaitForVBlank.  Pay atomic interrupt-handler debt before honoring the
+     * park, otherwise a handler that reaches the wait with debt remaining
+     * carries that debt into the next frame.  Repeating that pattern makes
+     * the emulated 68K fall progressively behind the VDP and briefly exposes
+     * partially rebuilt name tables during transitions. */
+    if (s_game_yielded_vblank)
+        return;
 
     s_chunk_cycles = cycles;
     s_cycle_budget = (int32_t)cycles;
@@ -872,7 +879,8 @@ static void own_deliver_vint(GVDP *vdp)
         interp_run_interrupt_or_halt(m68k_read32(0x78), "V-int");
     } else
     if (g_game_spec.call_vblank) g_game_spec.call_vblank();
-    s_irq_cycle_debt += g_audio_cycle_counter - cyc_before;
+    if (!g_game_spec.skip_atomic_irq_cycle_debt)
+        s_irq_cycle_debt += g_audio_cycle_counter - cyc_before;
     if (s_irq_cycle_debt)
         s_irq_cycle_debt_level = 6;
 #ifdef GEN_DEV_TRACE
@@ -1028,7 +1036,8 @@ void glue_own_interrupt(int level, GVDP *vdp)
             interp_run_interrupt_or_halt(m68k_read32(0x70), "H-int");
         } else
         if (g_game_spec.call_hblank) g_game_spec.call_hblank();
-        s_irq_cycle_debt += g_audio_cycle_counter - cyc_before;
+        if (!g_game_spec.skip_atomic_irq_cycle_debt)
+            s_irq_cycle_debt += g_audio_cycle_counter - cyc_before;
         if (s_irq_cycle_debt && s_irq_cycle_debt_level < 4)
             s_irq_cycle_debt_level = 4;
         g_rte_pending_ptr = &s_rte_real; g_rte_pending = 0;

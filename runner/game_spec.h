@@ -102,6 +102,14 @@ typedef struct GameSpec {
     void      (*call_vblank)(void);
     void      (*call_hblank)(void);
 
+    /* Some generated handlers enter through a game-owned trampoline whose
+     * cycle counter includes work outside the hardware IRQ residency window.
+     * Charging that total as atomic raster debt makes the 68K fall hundreds
+     * of scanlines behind the VDP. Set this only after comparison against a
+     * cycle-accurate reference shows that the measured debt is invalid.
+     * Zero keeps the normal shared-runtime accounting. */
+    int         skip_atomic_irq_cycle_debt;
+
     /* Save-state resume loop PC. Native save-state loads restart the
      * host game fiber here after restoring RAM/CPU state, because the
      * host C stack itself is not portable save-state data. This should

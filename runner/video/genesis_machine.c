@@ -401,8 +401,38 @@ void machine_run_frame(GenesisScanlineSink sink, void *user)
         s_line_base = (uint32_t)line * MASTER_PER_LINE;
         s_z80_off   = 0;   /* 68K writes during the chunk below land at the line start */
 
+        /* H-int is raised in the preceding horizontal blank and controls the
+         * scanline about to be emitted. Run its handler before sampling and
+         * rendering this line. Gunstar's intro uses that handler to enable the
+         * display near line 33, disable it near line 177, and install the
+         * vertical scroll for the band between them. */
+        if (irq & GVDP_IRQ_HBLANK) {
+            glue_own_interrupt(4, &m->vdp);
+            gvdp_latch_scanline_state(&m->vdp);
+        }
+
+        /* Render from the state visible at the scanline boundary. The old
+         * ordering rendered after a full line of CPU execution, making VDP
+         * writes retroactively affect pixels that hardware had already
+         * emitted. Raster changes made during this slice become visible on
+         * the following scanline, our line-granularity approximation of the
+         * VDP's progressive output. */
+        if (line < active_h && sink) {
+            int dbl = gvdp_interlace_double(&m->vdp);
+            for (int sub = 0; sub <= dbl; sub++) {
+                int row = (line << dbl) + sub;
+                int n = gvdp_render_scanline(&m->vdp, row, idxbuf);
+                for (int x = 0; x < n; x++) rowbuf[x] = s_cram_argb[idxbuf[x]];
+                sink(user, row, rowbuf, n);
+            }
+        }
+
         /* Advance the recompiled 68K ~one scanline (it parks at WaitForVBlank). */
         glue_run_game_chunk(M68K_PER_LINE);
+
+        /* Sample scroll/window state at the VDP's approximate latch point for
+         * use by the next progressively rendered scanline. */
+        gvdp_latch_scanline_state(&m->vdp);
 
         /* If a prior V-int was latched while the 68K had IRQs masked (e.g. a
          * move #$2700,sr screen transition), deliver it now that the chunk above
@@ -414,7 +444,6 @@ void machine_run_frame(GenesisScanlineSink sink, void *user)
         step_z80(m, Z80_PER_LINE);
 
         /* Deliver interrupts to the 68K (and the Z80 at vblank). */
-        if (irq & GVDP_IRQ_HBLANK) glue_own_interrupt(4, &m->vdp);
         if (irq & GVDP_IRQ_VBLANK) {
             /* Assert the Z80 vblank IRQ and LEAVE it pending — the Z80 takes it
              * on a later step_z80 (when IFF1 is enabled) and superzazu clears
@@ -443,19 +472,6 @@ void machine_run_frame(GenesisScanlineSink sink, void *user)
             m->z80.int_pending = 1;   /* level-triggered vblank IRQ assert */
 #endif
             glue_own_interrupt(6, &m->vdp);
-        }
-
-        /* Render + emit active scanlines. In interlace mode 2 each raster
-         * line yields TWO output rows (the even and odd fields' lines,
-         * rendered progressively into a 448-row frame). */
-        if (line < active_h && sink) {
-            int dbl = gvdp_interlace_double(&m->vdp);
-            for (int sub = 0; sub <= dbl; sub++) {
-                int row = (line << dbl) + sub;
-                int n = gvdp_render_scanline(&m->vdp, row, idxbuf);
-                for (int x = 0; x < n; x++) rowbuf[x] = s_cram_argb[idxbuf[x]];
-                sink(user, row, rowbuf, n);
-            }
         }
 
         m->master_cycle += MASTER_PER_LINE;
