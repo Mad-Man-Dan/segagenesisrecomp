@@ -97,6 +97,18 @@ typedef struct GVDP {
     void              *colour_updated_user;
 } GVDP;
 
+/* Process-lifetime renderer capacity telemetry. Kept outside GVDP so raw
+ * save-state compatibility is unchanged. These are observations of the
+ * compatibility renderer, not authored-engine capacity limits. */
+typedef struct GVDPCapacityMetrics {
+    uint32_t sprite_entries_peak;
+    uint32_t sprite_pixels_peak;
+    uint64_t sprite_overflow_lines;
+} GVDPCapacityMetrics;
+
+void gvdp_capacity_metrics_reset(void);
+GVDPCapacityMetrics gvdp_capacity_metrics_get(void);
+
 /* ---- Lifecycle ------------------------------------------------------------ */
 void gvdp_init(GVDP *v);
 void gvdp_reset(GVDP *v);

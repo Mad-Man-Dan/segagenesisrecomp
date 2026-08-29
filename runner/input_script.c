@@ -284,6 +284,9 @@ void input_script_tick(uint64_t frame,
             case OP_WAIT_RAM8: {
                 uint8_t v = r8 ? r8(o->arg32) : 0;
                 if (v != (uint8_t)o->arg32b) return;   /* keep blocking */
+                fprintf(stderr,
+                        "[input_script] WAIT_RAM8 reached at frame %llu ($%06X=$%02X)\n",
+                        (unsigned long long)frame, o->arg32, v);
                 s_pc++;
                 break;
             }
@@ -305,6 +308,9 @@ void input_script_tick(uint64_t frame,
             case OP_WAIT_RAM16: {
                 uint16_t v = r16 ? r16(o->arg32) : 0;
                 if (v != (uint16_t)o->arg32b) return;
+                fprintf(stderr,
+                        "[input_script] WAIT_RAM16 reached at frame %llu ($%06X=$%04X)\n",
+                        (unsigned long long)frame, o->arg32, v);
                 s_pc++;
                 break;
             }

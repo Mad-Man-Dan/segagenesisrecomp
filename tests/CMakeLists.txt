@@ -113,3 +113,19 @@ genesisrecomp_register_test(m68k_effective_address_test)
 target_include_directories(m68k_effective_address_test PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../runner/include"
 )
+
+# ---------------------------------------------------------------------------
+# m68k_interp_frame_test — stack-boundary contract for tier-3 capsules.
+# ROM-independent synthetic programs cover ordinary and hand-built call frames,
+# live self-modifying RAM, RTE propagation, malformed frames, and MOVEM state.
+# ---------------------------------------------------------------------------
+add_executable(m68k_interp_frame_test
+    harness/m68k_interp_frame_test.c
+    "${CMAKE_CURRENT_LIST_DIR}/../runner/m68k_interp.c"
+    ${GENESISRECOMP_DECODER_SOURCES}
+)
+genesisrecomp_register_test(m68k_interp_frame_test)
+target_include_directories(m68k_interp_frame_test PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../runner"
+    "${CMAKE_CURRENT_LIST_DIR}/../runner/include"
+)

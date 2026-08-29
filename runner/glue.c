@@ -424,7 +424,22 @@ int recomp_dispatch_ram_stub(uint32_t addr)
 
     static uint32_t s_reported_addr;
     uint32_t exit_pc = 0;
+    uint32_t audit_sp = g_cpu.A[7];
+    uint32_t audit_d6 = g_cpu.D[6];
+    uint32_t audit_a4 = g_cpu.A[4];
+    uint32_t audit_a5 = g_cpu.A[5];
     M68kiStatus st = m68k_interp_run_ram_handler(addr, &exit_pc);
+    if (getenv("GENESIS_RAM_CAPSULE_AUDIT")) {
+        int preserved = g_cpu.A[7] == audit_sp &&
+                        g_cpu.D[6] == audit_d6 &&
+                        g_cpu.A[4] == audit_a4 &&
+                        g_cpu.A[5] == audit_a5;
+        fprintf(stderr,
+                "[RAM-CAPSULE-AUDIT] entry=$%06X exit=$%06X status=%d "
+                "a7_neutral=%d d6_a4_a5_preserved=%d\n",
+                addr & 0xFFFFFFu, exit_pc & 0xFFFFFFu, (int)st,
+                g_cpu.A[7] == audit_sp, preserved);
+    }
     if (st == M68KI_OK)
         return 1;
 
@@ -607,6 +622,9 @@ static void game_fiber_func(void *param)
                   | ((uint32_t)g_rom[2] <<  8)
                   |  (uint32_t)g_rom[3];
     g_cpu.SR  = 0x2700u;
+
+    if (g_game_spec.on_post_reset)
+        g_game_spec.on_post_reset();
 
     if (genesis_force_interp()) {
         uint32_t entry = m68k_read32(4) & 0xFFFFFFu;   /* 68K reset vector */
@@ -815,6 +833,22 @@ static int interleave_irq_on(void) {
 uint32_t g_68k_stamp_rebase = 0;
 extern uint32_t machine_z80_stamp(void);   /* raster cursor, master cycles */
 
+static void interp_run_interrupt_or_halt(uint32_t entry_pc, const char *kind)
+{
+    entry_pc &= 0xFFFFFFu;
+    uint32_t exit_pc = 0;
+    M68kiStatus st = entry_pc >= RAM_BASE
+                         ? m68k_interp_run_ram_handler(entry_pc, &exit_pc)
+                         : m68k_interp_run_handler(entry_pc);
+    if (st == M68KI_OK) return;
+    fprintf(stderr,
+            "[FORCE_INTERP] HALT st=%d in %s handler at PC=$%06X op=$%04X "
+            "A7=$%06X\n",
+            (int)st, kind, g_m68ki_bad_pc, g_m68ki_bad_op,
+            (unsigned)(g_cpu.A[7] & 0xFFFFFFu));
+    exit(2);
+}
+
 static void own_deliver_vint(GVDP *vdp)
 {
     const uint32_t STK = g_game_layout.intr_stack;
@@ -842,7 +876,7 @@ static void own_deliver_vint(GVDP *vdp)
     if (genesis_force_interp()) {
         /* Interpret the V-int handler body from the level-6 autovector; delivery
          * (A7/stack save-restore, stamp rebase, cycle charging) is identical. */
-        m68k_interp_run_handler(m68k_read32(0x78) & 0xFFFFFFu);
+        interp_run_interrupt_or_halt(m68k_read32(0x78), "V-int");
     } else
     if (g_game_spec.call_vblank) g_game_spec.call_vblank();
     s_irq_cycle_debt += g_audio_cycle_counter - cyc_before;
@@ -910,7 +944,8 @@ static void own_run_handler_interleaved(int level, GVDP *vdp)
     uint8_t saved_vb = vdp->in_vblank; vdp->in_vblank = 1;
     g_rte_pending = 0; g_rte_pending_ptr = &s_rte_dummy; g_rte_pending = 0;
     if (genesis_force_interp()) {
-        m68k_interp_run_handler(m68k_read32(level == 6 ? 0x78 : 0x70) & 0xFFFFFFu);
+        interp_run_interrupt_or_halt(m68k_read32(level == 6 ? 0x78 : 0x70),
+                                     level == 6 ? "V-int" : "H-int");
     } else
     if (level == 6) { if (g_game_spec.call_vblank) g_game_spec.call_vblank(); }
     else            { if (g_game_spec.call_hblank) g_game_spec.call_hblank(); }
@@ -997,7 +1032,7 @@ void glue_own_interrupt(int level, GVDP *vdp)
         uint32_t cyc_before = g_audio_cycle_counter;
         if (genesis_force_interp()) {
             /* Interpret the H-int handler body from the level-4 autovector. */
-            m68k_interp_run_handler(m68k_read32(0x70) & 0xFFFFFFu);
+            interp_run_interrupt_or_halt(m68k_read32(0x70), "H-int");
         } else
         if (g_game_spec.call_hblank) g_game_spec.call_hblank();
         s_irq_cycle_debt += g_audio_cycle_counter - cyc_before;
@@ -1617,7 +1652,12 @@ uint8_t m68k_read8(uint32_t byte_addr)
             fiber_switch(s_main_fiber);
             /* fall through to real read */
         } else {
-            return 0x00u;  /* outside interleave: keep old shortcut */
+            /* Mailbox/semaphore polls keep the old non-interleaved shortcut.
+             * BUSREQ is different: callers also poll after writing 0 and need
+             * to observe the deasserted high byte (1). Returning 0 forever
+             * deadlocks Gunstar's IRQ-side controller read at $003088. */
+            if (byte_addr != 0xA11100u)
+                return 0x00u;
         }
     } else {
         last_poll_addr = 0;

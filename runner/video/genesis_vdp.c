@@ -484,6 +484,18 @@ void gvdp_set_ws_bar_black(int black) { s_ws_bar_black = black ? 1 : 0; }
 static int s_ws_bgdiag = 0;
 void gvdp_set_bgdiag(int on) { s_ws_bgdiag = on; }
 
+static GVDPCapacityMetrics s_capacity_metrics;
+
+void gvdp_capacity_metrics_reset(void)
+{
+    memset(&s_capacity_metrics, 0, sizeof(s_capacity_metrics));
+}
+
+GVDPCapacityMetrics gvdp_capacity_metrics_get(void)
+{
+    return s_capacity_metrics;
+}
+
 int gvdp_active_width(const GVDP *v)
 {
     int w = gvdp_screen_width(v);
@@ -529,6 +541,7 @@ static void sprite_render_line(GVDP *v, int line, int total, int offset)
     memset(drawn, 0, (size_t)total);
 
     int link = 0, on_line = 0, pixels_budget = total;
+    int pixels_used = 0, line_overflow = 0;
 
     for (int n = 0; n < max_sprites; n++) {
         uint16_t e = (uint16_t)(sat + link * 8);
@@ -540,7 +553,11 @@ static void sprite_render_line(GVDP *v, int line, int total, int offset)
         int next   = v->vram[(uint16_t)(e + 3)] & 0x7F;
 
         if (line >= y && line < y + height) {
-            if (++on_line > max_per_line) { v->sprite_overflow = 1; break; }
+            if (++on_line > max_per_line) {
+                v->sprite_overflow = 1;
+                line_overflow = 1;
+                break;
+            }
 
             uint16_t attr = vram_read_word(v, (uint16_t)(e + 4));
             /* 10-bit sprite X (was 0x1FF). The centered widescreen view needs
@@ -593,13 +610,25 @@ static void sprite_render_line(GVDP *v, int line, int total, int offset)
                 }
             }
 
+            pixels_used += width;
             pixels_budget -= width;
-            if (pixels_budget <= 0) { v->sprite_overflow = 1; break; }
+            if (pixels_budget <= 0) {
+                v->sprite_overflow = 1;
+                line_overflow = 1;
+                break;
+            }
         }
 
         if (next == 0) break;     /* link 0 terminates the list */
         link = next;
     }
+
+    if ((uint32_t)on_line > s_capacity_metrics.sprite_entries_peak)
+        s_capacity_metrics.sprite_entries_peak = (uint32_t)on_line;
+    if ((uint32_t)pixels_used > s_capacity_metrics.sprite_pixels_peak)
+        s_capacity_metrics.sprite_pixels_peak = (uint32_t)pixels_used;
+    if (line_overflow)
+        s_capacity_metrics.sprite_overflow_lines++;
 }
 
 /* Plane geometry: tiles wide/high from reg[16] (00=32,01=64,11=128). */

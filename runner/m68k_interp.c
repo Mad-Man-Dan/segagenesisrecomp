@@ -1333,8 +1333,8 @@ M68kiStatus m68k_interp_run(uint32_t entry_pc, uint32_t stop_pc) {
 /* ---------------------------------------------------------------------------
  * Framed capsule run — the edge-aware tier-3 fallback primitive.
  *
- * Runs from entry_pc tracking NET CALL DEPTH (JSR/BSR = +1, the matching
- * RTS/RTR = -1).  The run stops at the *depth-0* return — the point where the
+ * Runs from entry_pc inside the caller-owned ENTRY STACK BOUNDARY. The run
+ * stops when an RTS/RTR is reached with A7 exactly at that boundary — the point where the
  * capsule's own frame returns to whoever invoked the missed computed transfer.
  * Crucially, that final return is PEEKED, NOT POPPED: we read the return target
  * off A7 and exit with A7 UNCHANGED.  This makes the capsule A7-NEUTRAL, which
@@ -1356,6 +1356,10 @@ M68kiStatus m68k_interp_run(uint32_t entry_pc, uint32_t stop_pc) {
  * implausible one is an UNSAFE_EXIT (signal, never silent corruption).
  * On failure: HALT_* (target wasn't runnable code / runaway / bad fetch).
  *
+ * Tracking the actual stack boundary, instead of only JSR/BSR mnemonics, is
+ * required for hand-written call frames such as PEA target / JMP body / RTS.
+ * Such a body returns while A7 is below the entry boundary and must continue.
+ *
  * RTE is deliberately NOT treated as a frame return: it unwinds an exception
  * frame, not a subroutine call, and must not appear at the top of a computed
  * dispatch frame — if one shows up the loop will run past it and surface as a
@@ -1367,7 +1371,7 @@ M68kiStatus m68k_interp_run_framed(uint32_t entry_pc, uint32_t *out_exit_pc) {
     g_m68ki_discover_count = 0;
     if (out_exit_pc) *out_exit_pc = 0;
 
-    int depth = 0;
+    const uint32_t entry_sp = g_cpu.A[7];
     for (;;) {
         uint32_t pc = g_cpu.PC & 0xFFFFFFu;
         if (!pc_fetchable(pc)) { g_m68ki_bad_pc = pc; return M68KI_HALT_BADADDR; }
@@ -1378,9 +1382,15 @@ M68kiStatus m68k_interp_run_framed(uint32_t entry_pc, uint32_t *out_exit_pc) {
             return M68KI_HALT_UNIMPL;
         }
 
+        if (g_cpu.A[7] > entry_sp) {
+            g_m68ki_bad_pc = pc;
+            return M68KI_HALT_BADFRAME;
+        }
+
         /* The capsule's own return: peek, don't pop (A7-neutral). RTS pops PC;
          * RTR pops a CCR word first, so its PC is one word deeper. */
-        if (depth == 0 && (ins.mnemonic == MN_RTS || ins.mnemonic == MN_RTR)) {
+        if (g_cpu.A[7] == entry_sp &&
+            (ins.mnemonic == MN_RTS || ins.mnemonic == MN_RTR)) {
             uint32_t ret = (ins.mnemonic == MN_RTR)
                                ? m68k_read32(g_cpu.A[7] + 2u)
                                : m68k_read32(g_cpu.A[7]);
@@ -1398,13 +1408,10 @@ M68kiStatus m68k_interp_run_framed(uint32_t entry_pc, uint32_t *out_exit_pc) {
         }
         g_cpu.PC = next & 0xFFFFFFu;
         interp_account_cycles(&ins);
-        /* Net-depth bookkeeping (after exec). A nested RTS/RTR balances a prior
-         * JSR/BSR within the capsule; depth never goes below 0 because a
-         * depth-0 return is intercepted above. */
-        if (ins.mnemonic == MN_JSR || ins.mnemonic == MN_BSR)
-            depth++;
-        else if (ins.mnemonic == MN_RTS || ins.mnemonic == MN_RTR)
-            depth--;
+        if (g_cpu.A[7] > entry_sp) {
+            g_m68ki_bad_pc = g_cpu.PC;
+            return M68KI_HALT_BADFRAME;
+        }
 
         if (++g_m68ki_insn_count > M68KI_INSN_GUARD) {
             g_m68ki_bad_pc = g_cpu.PC; return M68KI_HALT_GUARD;
@@ -1419,33 +1426,41 @@ M68kiStatus m68k_interp_run_framed(uint32_t entry_pc, uint32_t *out_exit_pc) {
  * the handler's own depth-0 RTE — the exact analog of what the recompiled
  * g_game_spec.call_vblank()/call_hblank() do inside glue's own_deliver_vint /
  * glue_own_interrupt: run the handler for its SIDE EFFECTS (RAM / chip / Z80
- * mailbox writes) with the caller's save/restore around it. The RTE is PEEKED,
- * not executed: glue set A7 = intr_stack with no real exception frame pushed
- * (matching the recomp model), and discards g_cpu afterward, so popping would
- * read garbage. Net call depth (JSR/BSR +1, RTS/RTR -1) keeps a nested
- * subroutine's RTE-free returns from ending the run early.
+ * mailbox writes) with the caller's save/restore around it. The outer RTE is
+ * PEEKED, not executed: glue set A7 = intr_stack with no real exception frame
+ * pushed (matching the recomp model), and discards g_cpu afterward, so popping
+ * would read garbage. The captured entry stack boundary, rather than mnemonic
+ * call depth, keeps synthetic PEA/JMP/RTS frames from ending the run early.
  * ------------------------------------------------------------------------- */
 M68kiStatus m68k_interp_run_handler(uint32_t entry_pc) {
     g_cpu.PC = entry_pc & 0xFFFFFFu;
     g_m68ki_insn_count = 0;
     g_m68ki_discover_count = 0;
 
-    int depth = 0;
+    const uint32_t entry_sp = g_cpu.A[7];
     for (;;) {
         uint32_t pc = g_cpu.PC & 0xFFFFFFu;
-        if (pc >= ROM_SIZE) { g_m68ki_bad_pc = pc; return M68KI_HALT_BADADDR; }
+        if (!pc_fetchable(pc)) { g_m68ki_bad_pc = pc; return M68KI_HALT_BADADDR; }
 
         M68KInstr ins;
-        /* ROM-only handler body (guarded by the ROM_SIZE check above); busview()
-         * returns identical bytes for pc < ROM_SIZE. (romview() was removed when
-         * the interpreter moved to a unified live bus view.) */
+        /* Decode through the unified live bus. Interrupt handlers may call
+         * game-installed or self-modifying RAM helpers before their outer RTE. */
         if (!m68k_decode(busview(), pc, &ins)) {
             g_m68ki_bad_pc = pc; g_m68ki_bad_op = m68k_read16(pc);
             return M68KI_HALT_UNIMPL;
         }
 
-        if (depth == 0 && ins.mnemonic == MN_RTE)
+        if (g_cpu.A[7] > entry_sp) {
+            g_m68ki_bad_pc = pc;
+            return M68KI_HALT_BADFRAME;
+        }
+
+        if (g_cpu.A[7] == entry_sp && ins.mnemonic == MN_RTE)
             return M68KI_OK;                 /* handler's own return — stop, don't pop */
+        if (ins.mnemonic == MN_RTE) {
+            g_m68ki_bad_pc = pc;
+            return M68KI_HALT_BADFRAME;
+        }
 
         uint32_t next;
         s_illegal_ea = 0;
@@ -1457,10 +1472,10 @@ M68kiStatus m68k_interp_run_handler(uint32_t entry_pc) {
         }
         g_cpu.PC = next & 0xFFFFFFu;
         interp_account_cycles(&ins);
-        if (ins.mnemonic == MN_JSR || ins.mnemonic == MN_BSR)
-            depth++;
-        else if (ins.mnemonic == MN_RTS || ins.mnemonic == MN_RTR)
-            depth--;
+        if (g_cpu.A[7] > entry_sp) {
+            g_m68ki_bad_pc = g_cpu.PC;
+            return M68KI_HALT_BADFRAME;
+        }
 
         if (++g_m68ki_insn_count > M68KI_INSN_GUARD) {
             g_m68ki_bad_pc = g_cpu.PC; return M68KI_HALT_GUARD;
@@ -1481,12 +1496,12 @@ M68kiStatus m68k_interp_run_handler(uint32_t entry_pc) {
  * the very next fetch, exactly like hardware.
  *
  * Exit contract (mirrors the generated code's ABI):
- *   - depth-0 RTS/RTR: PEEK the return target without popping (A7-neutral);
+ *   - outer RTS/RTR at the entry stack boundary: PEEK the return target without popping (A7-neutral);
  *     the generated caller performs the single pop — identical to the framed
  *     capsule and to recomp_dispatch_ram_stub's old hand-decoded RTS path.
  *   - RTE at any depth: the generated equivalent is `g_rte_pending = 1;
- *     return;` with each JSR level unwinding its own +4 — so set
- *     g_rte_pending, unwind the guest stack by 4*depth, and exit. This is
+ *     return;` with each C call level unwinding — so set g_rte_pending,
+ *     restore the guest stack to the captured entry boundary, and exit. This is
  *     how interrupt-handler bodies return to glue's delivery wrapper.
  * Cycle accounting runs per instruction (interp_account_cycles), the same
  * tail the generated code emits.
@@ -1498,7 +1513,7 @@ M68kiStatus m68k_interp_run_ram_handler(uint32_t entry_pc, uint32_t *out_exit_pc
     g_m68ki_discover_count = 0;
     if (out_exit_pc) *out_exit_pc = 0;
 
-    int depth = 0;
+    const uint32_t entry_sp = g_cpu.A[7];
     for (;;) {
         uint32_t pc = g_cpu.PC & 0xFFFFFFu;
         if (!pc_fetchable(pc)) { g_m68ki_bad_pc = pc; return M68KI_HALT_BADADDR; }
@@ -1509,8 +1524,14 @@ M68kiStatus m68k_interp_run_ram_handler(uint32_t entry_pc, uint32_t *out_exit_pc
             return M68KI_HALT_UNIMPL;
         }
 
-        /* Depth-0 subroutine return: peek, don't pop (A7-neutral). */
-        if (depth == 0 && (ins.mnemonic == MN_RTS || ins.mnemonic == MN_RTR)) {
+        if (g_cpu.A[7] > entry_sp) {
+            g_m68ki_bad_pc = pc;
+            return M68KI_HALT_BADFRAME;
+        }
+
+        /* Outermost subroutine return: peek, don't pop (A7-neutral). */
+        if (g_cpu.A[7] == entry_sp &&
+            (ins.mnemonic == MN_RTS || ins.mnemonic == MN_RTR)) {
             uint32_t ret = (ins.mnemonic == MN_RTR)
                                ? m68k_read32(g_cpu.A[7] + 2u)
                                : m68k_read32(g_cpu.A[7]);
@@ -1523,7 +1544,7 @@ M68kiStatus m68k_interp_run_ram_handler(uint32_t entry_pc, uint32_t *out_exit_pc
          * JSR return addresses this capsule pushed, flag the skip-return,
          * and hand control back to the C caller. */
         if (ins.mnemonic == MN_RTE) {
-            g_cpu.A[7] += 4u * (uint32_t)depth;
+            g_cpu.A[7] = entry_sp;
             g_rte_pending = 1;
             interp_account_cycles(&ins);
             return M68KI_OK;
@@ -1540,10 +1561,10 @@ M68kiStatus m68k_interp_run_ram_handler(uint32_t entry_pc, uint32_t *out_exit_pc
         g_cpu.PC = next & 0xFFFFFFu;
         interp_account_cycles(&ins);
 
-        if (ins.mnemonic == MN_JSR || ins.mnemonic == MN_BSR)
-            depth++;
-        else if (ins.mnemonic == MN_RTS || ins.mnemonic == MN_RTR)
-            depth--;
+        if (g_cpu.A[7] > entry_sp) {
+            g_m68ki_bad_pc = g_cpu.PC;
+            return M68KI_HALT_BADFRAME;
+        }
 
         if (++g_m68ki_insn_count > M68KI_INSN_GUARD) {
             g_m68ki_bad_pc = g_cpu.PC; return M68KI_HALT_GUARD;

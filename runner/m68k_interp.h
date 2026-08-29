@@ -33,6 +33,7 @@ typedef enum {
     M68KI_HALT_UNIMPL,     /* hit an instruction the executor doesn't implement */
     M68KI_HALT_GUARD,      /* exceeded the instruction guard (runaway / spin) */
     M68KI_HALT_BADADDR,    /* tried to fetch an instruction from an un-fetchable PC */
+    M68KI_HALT_BADFRAME,   /* crossed or malformed the caller-owned stack frame */
 } M68kiStatus;
 
 /*
@@ -49,8 +50,8 @@ M68kiStatus m68k_interp_run(uint32_t entry_pc, uint32_t stop_pc);
 
 /*
  * Framed capsule run — the edge-aware tier-3 fallback primitive (see the long
- * comment in m68k_interp.c). Runs from entry_pc tracking net call depth and
- * stops at the depth-0 return, PEEKING the return target without popping A7
+ * comment in m68k_interp.c). Runs from entry_pc within the caller-owned entry
+ * stack boundary and stops at the outer return, PEEKING its target without popping A7
  * (A7-neutral) so the native loose-A7 caller performs the single pop. Correct
  * for computed-JSR, computed-JMP-tail, and interior-label misses alike.
  *
@@ -63,8 +64,8 @@ M68kiStatus m68k_interp_run_framed(uint32_t entry_pc, uint32_t *out_exit_pc);
 /*
  * RAM-handler capsule — executes RAM-RESIDENT code decoding every instruction
  * from LIVE memory (self-modifying copied handlers stay correct). A7-neutral
- * at the depth-0 RTS/RTR (peeks *out_exit_pc); an RTE at any depth mirrors
- * generated-code semantics (set g_rte_pending, unwind capsule-pushed frames,
+ * at the outer RTS/RTR (peeks *out_exit_pc); an RTE at any depth mirrors
+ * generated-code semantics (set g_rte_pending, unwind to the entry boundary,
  * return to the C caller). Per-instruction cycle accounting included.
  */
 M68kiStatus m68k_interp_run_ram_handler(uint32_t entry_pc, uint32_t *out_exit_pc);

@@ -4,6 +4,8 @@
  * Z80, and our VDP, delivering V/H interrupts. Original implementation.
  */
 #include "genesis_machine.h"
+#include "game_spec.h"
+#include "genesis_runtime.h"
 #ifdef GENESIS_Z80_RECOMP
 #include "../z80_recomp.h"
 #endif
@@ -390,6 +392,9 @@ void machine_run_frame(GenesisScanlineSink sink, void *user)
     static uint8_t  idxbuf[GVDP_MAX_WIDTH];
     static uint32_t rowbuf[GVDP_MAX_WIDTH];
 
+    if (g_game_spec.on_frame_pre)
+        g_game_spec.on_frame_pre(g_frame_count);
+
     for (int line = 0; line < LINES_TOTAL; line++) {
         unsigned irq = gvdp_begin_scanline(&m->vdp, line);
         g_snd_line = (unsigned)line;   /* [SND-TRACE] */
@@ -455,5 +460,7 @@ void machine_run_frame(GenesisScanlineSink sink, void *user)
 
         m->master_cycle += MASTER_PER_LINE;
     }
+    if (g_game_spec.on_frame_post)
+        g_game_spec.on_frame_post(g_frame_count);
     g_snd_frame++;   /* [SND-TRACE] */
 }
