@@ -196,6 +196,20 @@ static void recomp_interrupt_context_leave(int saved)
     g_split_sp_popped = saved;
 }
 
+/* Atomic interrupt delivery substitutes a private scheduler-owned stack and
+ * suppresses the handler's RTE because there is no guest exception frame to
+ * pop. Restore only the control state that a real RTE restores. D0-D7 and
+ * A0-A6 must retain the handler's resulting values: games may deliberately
+ * carry raster state between H-ints in a register (Gunstar advances A6 through
+ * its per-scanline V-scroll table this way), while ordinary handlers preserve
+ * their scratch registers themselves with MOVEM just as they do on hardware. */
+static void interrupt_restore_control_state(const M68KState *saved)
+{
+    g_cpu.A[7] = saved->A[7];
+    g_cpu.SR = saved->SR;
+    g_cpu.PC = saved->PC;
+}
+
 int       g_early_return      = 0;
 
 int       g_dbg_b64_count     = 0;
@@ -915,7 +929,7 @@ static void own_deliver_vint(GVDP *vdp)
     g_rte_pending_ptr = &s_rte_real; g_rte_pending = 0;
     s_in_vblank_service = 0;
     for (int i = 0; i < 256; i++) g_ram[(byteoff + i) & 0xFFFFu] = save[i];
-    g_cpu = saved;
+    interrupt_restore_control_state(&saved);
     recomp_interrupt_context_leave(saved_split_sp_popped);
     s_game_yielded_vblank = 0;
 }
@@ -953,7 +967,7 @@ static void own_run_handler_interleaved(int level, GVDP *vdp)
     g_rte_pending_ptr = &s_rte_real; g_rte_pending = 0;
     vdp->in_vblank = saved_vb;
     for (int i = 0; i < 256; i++) g_ram[(byteoff + i) & 0xFFFFu] = save[i];
-    g_cpu = saved;
+    interrupt_restore_control_state(&saved);
     recomp_interrupt_context_leave(saved_split_sp_popped);
     s_irq_in_progress = 0;
     s_game_yielded_vblank = 0;
@@ -1044,7 +1058,7 @@ void glue_own_interrupt(int level, GVDP *vdp)
         g_68k_stamp_rebase = saved_rebase;
         s_in_vblank_service = 0;
         for (int i = 0; i < 256; i++) g_ram[(byteoff + i) & 0xFFFFu] = save[i];
-        g_cpu = saved;
+        interrupt_restore_control_state(&saved);
         recomp_interrupt_context_leave(saved_split_sp_popped);
     }
 }
