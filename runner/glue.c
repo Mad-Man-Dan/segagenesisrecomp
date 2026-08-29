@@ -425,20 +425,13 @@ int recomp_dispatch_ram_stub(uint32_t addr)
     static uint32_t s_reported_addr;
     uint32_t exit_pc = 0;
     uint32_t audit_sp = g_cpu.A[7];
-    uint32_t audit_d6 = g_cpu.D[6];
-    uint32_t audit_a4 = g_cpu.A[4];
-    uint32_t audit_a5 = g_cpu.A[5];
     M68kiStatus st = m68k_interp_run_ram_handler(addr, &exit_pc);
     if (getenv("GENESIS_RAM_CAPSULE_AUDIT")) {
-        int preserved = g_cpu.A[7] == audit_sp &&
-                        g_cpu.D[6] == audit_d6 &&
-                        g_cpu.A[4] == audit_a4 &&
-                        g_cpu.A[5] == audit_a5;
         fprintf(stderr,
                 "[RAM-CAPSULE-AUDIT] entry=$%06X exit=$%06X status=%d "
-                "a7_neutral=%d d6_a4_a5_preserved=%d\n",
+                "a7_neutral=%d\n",
                 addr & 0xFFFFFFu, exit_pc & 0xFFFFFFu, (int)st,
-                g_cpu.A[7] == audit_sp, preserved);
+                g_cpu.A[7] == audit_sp);
     }
     if (st == M68KI_OK)
         return 1;
