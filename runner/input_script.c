@@ -43,6 +43,7 @@ typedef enum {
     OP_LOAD_STATE,
     OP_DUMP_RAM,
     OP_DUMP_VRAM,
+    OP_WINDOW_MODE,
     OP_EXIT,
 } OpCode;
 
@@ -72,6 +73,7 @@ static char     s_pending_save_state[260];
 static char     s_pending_load_state[260];
 static char     s_pending_ram_dump[260];
 static char     s_pending_vram_dump[260];
+static int      s_pending_window_mode = -1;
 
 /* PRESS auto-release tracking. Up to 8 simultaneous PRESS timers. */
 typedef struct { uint8_t mask; uint8_t player_id; uint64_t release_frame; } PressTimer;
@@ -195,6 +197,13 @@ static int parse_line(char *line, int line_no) {
     } else if (!_stricmp(tok, "DUMP_VRAM") && n >= 2) {
         o->op = OP_DUMP_VRAM;
         snprintf(o->str, sizeof(o->str), "%s", a1);
+    } else if (!_stricmp(tok, "WINDOW_MODE") && n >= 2) {
+        o->op = OP_WINDOW_MODE;
+        if      (!_stricmp(a1, "WINDOWED"))   o->arg32 = 0;
+        else if (!_stricmp(a1, "BORDERLESS")) o->arg32 = 1;
+        else if (!_stricmp(a1, "EXCLUSIVE"))  o->arg32 = 2;
+        else if (!_stricmp(a1, "TOGGLE"))     o->arg32 = 3;
+        else goto bad;
     } else if (!_stricmp(tok, "EXIT")) {
         o->op    = OP_EXIT;
         o->arg32 = (n >= 2) ? (uint32_t)strtoul(a1, NULL, 0) : 0u;
@@ -221,6 +230,7 @@ int input_script_load(const char *path) {
     s_pending_load_state[0] = '\0';
     s_pending_ram_dump[0] = '\0';
     s_pending_vram_dump[0] = '\0';
+    s_pending_window_mode = -1;
     memset(s_press_timers, 0, sizeof(s_press_timers));
     if (!path) return 0;
 
@@ -400,6 +410,13 @@ void input_script_tick(uint64_t frame,
                 s_pc++;
                 break;
 
+            case OP_WINDOW_MODE:
+                s_pending_window_mode = (int)o->arg32;
+                fprintf(stderr, "[input_script] WINDOW_MODE requested at frame %llu (mode=%u)\n",
+                        (unsigned long long)frame, (unsigned)o->arg32);
+                s_pc++;
+                break;
+
             case OP_EXIT:
                 s_exit_pending = 1;
                 s_exit_code    = (int)o->arg32;
@@ -437,6 +454,14 @@ bool input_script_take_save_state(char *out, size_t out_cap)
 bool input_script_take_screenshot(char *out, size_t out_cap)
 {
     return take_pending_path(s_pending_screenshot, out, out_cap);
+}
+
+bool input_script_take_window_mode(int *out_mode)
+{
+    if (s_pending_window_mode < 0) return false;
+    if (out_mode) *out_mode = s_pending_window_mode;
+    s_pending_window_mode = -1;
+    return true;
 }
 
 bool input_script_take_load_state(char *out, size_t out_cap)

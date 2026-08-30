@@ -61,9 +61,17 @@ Reference for probe authors. All commands take a JSON request like
   (expected, not an anomaly), `min_queued_bytes` low-water, live
   `queued_bytes`.
 - `audio_delivery_dump {"path":"x.txt"}` — dump the always-on delivery
-  rings: per-flush SDL queue depth (last ~68 s) + drop/underrun events
-  with wall-frame stamps. The post-hoc probe for "I just heard a boop".
+  rings: per-flush bridge fill in milliseconds (last ~68 s) plus
+  drop/underrun events with wall-frame stamps. The post-hoc probe for "I just
+  heard a boop". A finite real-time run can write the same evidence at clean
+  shutdown with `--audio-delivery-out PATH`.
 - `read_joypad_port` — current port latch.
+
+For host-lifecycle validation, `--session-report PATH` writes a structured
+`GENESISRECOMP_SESSION` record after normal teardown. It includes delivered
+frame intervals, real-time audio anomalies, display-transition count, exit
+code, and a `clean_shutdown` marker. Input scripts can request the same display
+paths as the hotkey with `WINDOW_MODE WINDOWED|BORDERLESS|EXCLUSIVE|TOGGLE`.
 
 ### Frame ring (Tier-2 frame)
 - `get_frame <frame_idx>` — single-frame snapshot.

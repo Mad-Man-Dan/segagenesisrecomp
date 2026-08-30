@@ -49,10 +49,10 @@ typedef struct {
     double em_low_ms;       /* below this = underrun emergency (default 12)     */
     double em_high_ms;      /* above this = overflow emergency (default 105)    */
     /* --- Phase-1 stall concealment (brief transition/startup producer stalls) --- */
-    double preroll_ms;      /* initial prime cushion; 0 => prime at target_ms.      *
-                             * Values above target trade startup synchronization for *
-                             * extra cold-start protection; the servo later drains   *
-                             * the excess down to target.                            */
+    double preroll_ms;      /* initial prime threshold; 0 => use target_ms. It may be *
+                             * lower than target for quick startup followed by a      *
+                             * gradual reserve build, or higher for extra cold-start  *
+                             * protection.                                            */
     int    stretch_enable;  /* 1 = conceal underruns by pitch-preserving loop of the *
                              * most recent audio instead of fading to silence (1)    */
     double stretch_min_ms;  /* min loop period / correlation search floor (5)        */
@@ -91,7 +91,7 @@ typedef struct rab_bridge {
     /* fade / emergency */
     double gain;            /* 0..1 smooth gate for startup/underrun           */
     int    primed;          /* set once fill first reaches prime_ms            */
-    double prime_ms;        /* fill needed to prime (preroll_ms or target_ms)  */
+    double prime_ms;        /* fill needed to prime (explicit preroll or target) */
     float  last_out[2];     /* last emitted sample per channel (for holds)     */
 
     /* stall concealment (pitch-preserving loop of recent audio on starvation) */
@@ -246,7 +246,7 @@ void rab_reset(rab_bridge *b) {
     b->corr     = 0.0;
     b->gain     = 0.0;
     b->primed   = 0;
-    b->prime_ms = (b->cfg.preroll_ms > b->cfg.target_ms)
+    b->prime_ms = b->cfg.preroll_ms > 0.0
                     ? b->cfg.preroll_ms : b->cfg.target_ms;
     b->concealing = 0;
     b->loop_start = b->loop_len = b->loop_pos = 0.0;

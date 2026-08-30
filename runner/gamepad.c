@@ -161,6 +161,11 @@ uint16_t gamepad_player_mask(int player)
     return m;
 }
 
+int gamepad_player_connected(int player)
+{
+    return player >= 0 && player < 2 && s_pad[player] != NULL;
+}
+
 int gamepad_turbo_held(void)
 {
     /* Player 1's Back/View button, 3-button mode only (6-button uses it for Mode). */

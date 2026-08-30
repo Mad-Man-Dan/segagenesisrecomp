@@ -9,7 +9,7 @@
  * The reference mixer (clownmdemu-frontend-common/mixer.h) uses PSG as the
  * base rate so PSG never needs resampling.  FM is upsampled to match.
  */
-int  audio_init(int psg_sample_rate);
+int  audio_init(int psg_sample_rate, double target_ms, double preroll_ms);
 void audio_close(void);
 
 /* Master output volume, 0..100 (settings.ini / launcher). Speaker stream only;

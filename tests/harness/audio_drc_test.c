@@ -40,6 +40,13 @@ int main(void)
     require_true(fabs(bridge.prime_ms - cfg.target_ms) < 0.001,
                  "zero preroll must prime at the steady-state target");
 
+    rab_free(&bridge);
+    cfg.preroll_ms = 4.0;
+    require_true(rab_init(&bridge, &cfg) == 0,
+                 "bridge reinitialization with explicit preroll failed");
+    require_true(fabs(bridge.prime_ms - cfg.preroll_ms) < 0.001,
+                 "explicit preroll must be independent of steady-state target");
+
     for (int i = 0; i < 80; ++i) {
         int16_t sample = (int16_t)((i & 1) ? 12000 : -12000);
         input[i * 2] = sample;

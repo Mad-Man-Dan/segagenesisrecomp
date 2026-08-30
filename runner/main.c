@@ -424,6 +424,33 @@ static void update_render_logical_size(SDL_Renderer *renderer)
     SDL_RenderSetLogicalSize(renderer, s_screen_width, display_logical_height());
 }
 
+/* Apply one host display transition from either the keyboard/UI path or the
+ * deterministic input-script lifecycle harness. Keeping it here makes the
+ * transition semantics identical and gives automation an observable result. */
+static int apply_window_mode(SDL_Window *window, SDL_Renderer *renderer,
+                             int requested_mode, uint32_t frame_num)
+{
+    Uint32 current = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+    int mode = requested_mode;
+    if (mode == 3) {
+        mode = current ? 0 : (g_app_config.fullscreen == 2 ? 2 : 1);
+    }
+    Uint32 flags = mode == 2 ? SDL_WINDOW_FULLSCREEN
+                   : mode == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
+    int rc = SDL_SetWindowFullscreen(window, flags);
+    update_render_logical_size(renderer);
+    Uint32 actual_flags = SDL_GetWindowFlags(window);
+    int actual = (actual_flags & SDL_WINDOW_FULLSCREEN_DESKTOP)
+                     ? ((actual_flags & SDL_WINDOW_FULLSCREEN_DESKTOP) ==
+                                SDL_WINDOW_FULLSCREEN_DESKTOP ? 1 : 2)
+                     : 0;
+    fprintf(stderr,
+            "[VIDEO-LIFECYCLE] frame=%u requested=%d actual=%d rc=%d%s%s\n",
+            frame_num, mode, actual, rc,
+            rc == 0 ? "" : " error=", rc == 0 ? "" : SDL_GetError());
+    return rc;
+}
+
 /* Convert a Genesis CRAM value to ARGB8888.
  *
  * Genesis CRAM format (9 significant bits):
@@ -1386,6 +1413,10 @@ int main(int argc, char *argv[])
      * gm=0 writes that TCP arming misses due to startup latency. */
     const char *mem_write_log_spec = NULL;
     const char *wav_path = NULL;
+    /* Optional paced-session artifacts. Unlike --benchmark, these keep real
+     * presentation, pacing, and speaker delivery enabled. */
+    const char *session_report_path = NULL;
+    const char *audio_delivery_path = NULL;
 
     /* --exec-coverage-out PATH — at exit, dump the clean-room interpreter's
      * always-on executed-PC set as text. With GENESIS_FORCE_INTERP=1 this is
@@ -1457,6 +1488,10 @@ int main(int argc, char *argv[])
             mem_write_log_spec = argv[++i];
         } else if (strcmp(argv[i], "--wav") == 0 && i + 1 < argc) {
             wav_path = argv[++i];
+        } else if (strcmp(argv[i], "--session-report") == 0 && i + 1 < argc) {
+            session_report_path = argv[++i];
+        } else if (strcmp(argv[i], "--audio-delivery-out") == 0 && i + 1 < argc) {
+            audio_delivery_path = argv[++i];
         } else if (strcmp(argv[i], "--pacing") == 0 && i + 1 < argc) {
             pacing_cli = argv[++i];
         } else if (strncmp(argv[i], "--pacing=", 9) == 0) {
@@ -1519,6 +1554,7 @@ int main(int argc, char *argv[])
         int automation = (max_frames || hash_frames || hash_on_mode || input_script_path ||
                           snd_dump_frame || snd_dump_vint || target_fps_cli != 0.0 ||
                           mem_write_log_spec || wav_path || s_script_start_frame ||
+                          session_report_path || audio_delivery_path ||
                           s_script_right_frame || debug_port_cli || start_turbo ||
                           no_launcher || getenv("GENESIS_NO_LAUNCHER") != NULL);
 #if RECOMP_LAUNCHER
@@ -1934,7 +1970,9 @@ int main(int argc, char *argv[])
     /* Output at PSG rate (~223721 Hz NTSC) — matches the reference mixer.
      * PSG never needs resampling; FM is upsampled to this rate. */
     if (!benchmark_frames) {
-        audio_init(GENESIS_PSG_SAMPLE_RATE_NTSC);
+        audio_init(GENESIS_PSG_SAMPLE_RATE_NTSC,
+                   g_game_spec.audio_target_ms,
+                   g_game_spec.audio_preroll_ms);
         audio_set_master_volume(g_app_config.volume); /* settings.ini / launcher */
     }
 #if RECOMP_LAUNCHER
@@ -2147,6 +2185,8 @@ int main(int argc, char *argv[])
     int turbo   = start_turbo;   /* F5 toggles turbo (uncapped frame rate, no audio) */
     audio_set_playback_enabled(!turbo);
     uint32_t frame_num = 0;
+    int      process_exit_code = 0;
+    uint32_t display_transitions = 0;
     int      mode_prev = -1;     /* --hash-on-mode: last Game_Mode seen (-1 = none yet) */
     uint32_t mode_seq  = 0;      /* --hash-on-mode: transition sequence counter */
     Uint32 frame_start = SDL_GetTicks();
@@ -2158,9 +2198,30 @@ int main(int argc, char *argv[])
         benchmark_frames ? benchmark_process_cpu_seconds() : 0.0;
     uint64_t benchmark_cycles_start =
         benchmark_frames ? benchmark_process_cpu_cycles() : 0;
+    Uint64 session_start = SDL_GetPerformanceCounter();
+    Uint64 session_prev_frame = 0;
+    double session_dt_min_ms = 0.0, session_dt_max_ms = 0.0;
+    uint64_t session_dt_samples = 0, session_over_25ms = 0, session_over_50ms = 0;
 
     while (running) {
         if (max_frames && frame_num >= max_frames) break;
+
+        /* Top-to-top frame intervals include rendering, vsync, manual pacing,
+         * and host transitions. They therefore describe the delivered paced
+         * session rather than uncapped emulation throughput. */
+        {
+            Uint64 now = SDL_GetPerformanceCounter();
+            if (session_prev_frame) {
+                double dt_ms = (double)(now - session_prev_frame) * 1000.0 /
+                               (double)SDL_GetPerformanceFrequency();
+                if (!session_dt_samples || dt_ms < session_dt_min_ms) session_dt_min_ms = dt_ms;
+                if (!session_dt_samples || dt_ms > session_dt_max_ms) session_dt_max_ms = dt_ms;
+                if (dt_ms > 25.0) session_over_25ms++;
+                if (dt_ms > 50.0) session_over_50ms++;
+                session_dt_samples++;
+            }
+            session_prev_frame = now;
+        }
 
         /* Poll TCP debug server */
         CmdResult cmd_cr = {0};
@@ -2220,18 +2281,8 @@ int main(int argc, char *argv[])
                     int cmd_f = (ev.key.keysym.sym == SDLK_f) &&
                                 (mod & (KMOD_GUI | KMOD_CTRL));
                     if (ev.key.keysym.sym == SDLK_F11 || alt_enter || cmd_f) {
-                        /* Toggle between windowed and the CONFIGURED fullscreen
-                         * mode (2 = exclusive, otherwise borderless-desktop) so
-                         * the hotkey respects the launcher's tri-state choice.
-                         * SDL_WINDOW_FULLSCREEN_DESKTOP contains the
-                         * SDL_WINDOW_FULLSCREEN bit, so one mask covers both. */
-                        Uint32 is_fs = SDL_GetWindowFlags(window) &
-                                       SDL_WINDOW_FULLSCREEN_DESKTOP;
-                        Uint32 want = (g_app_config.fullscreen == 2)
-                                          ? SDL_WINDOW_FULLSCREEN
-                                          : SDL_WINDOW_FULLSCREEN_DESKTOP;
-                        SDL_SetWindowFullscreen(window, is_fs ? 0 : want);
-                        update_render_logical_size(renderer);
+                        if (apply_window_mode(window, renderer, 3, frame_num) == 0)
+                            display_transitions++;
                         continue;   /* don't also treat Enter/F-key as a save slot */
                     }
                 }
@@ -2584,11 +2635,18 @@ int main(int argc, char *argv[])
                 if (input_script_take_screenshot(state_path, sizeof(state_path)))
                     runner_write_screenshot_file(state_path);
             }
+            {
+                int window_mode;
+                if (input_script_take_window_mode(&window_mode) &&
+                    apply_window_mode(window, renderer, window_mode, frame_num) == 0)
+                    display_transitions++;
+            }
             if (input_script_should_exit()) {
                 fprintf(stderr, "[input_script] exiting per script directive (code=%d)\n",
                         input_script_exit_code());
-                if (s_sram_dirty) runner_sram_flush();
-                return input_script_exit_code();
+                process_exit_code = input_script_exit_code();
+                running = 0;
+                break;  /* follow the normal teardown path */
             }
         }
 
@@ -2841,6 +2899,20 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Capture lifecycle evidence before shutting down the audio device. The
+     * final report itself is written only after every teardown step succeeds. */
+    Uint64 session_end = SDL_GetPerformanceCounter();
+    double session_seconds = (double)(session_end - session_start) /
+                             (double)SDL_GetPerformanceFrequency();
+    AudioStats session_audio = {0};
+    audio_get_stats(&session_audio);
+    if (audio_delivery_path) {
+        if (audio_delivery_dump(audio_delivery_path) != 0)
+            fprintf(stderr, "[AUDIO-DELIVERY] cannot write %s\n", audio_delivery_path);
+        else
+            fprintf(stderr, "[AUDIO-DELIVERY] wrote %s\n", audio_delivery_path);
+    }
+
     /* --- Cleanup --- */
 #if GENESIS_HAS_RECOMP_NET
     genesis_netplay_shutdown();
@@ -2859,5 +2931,42 @@ int main(int argc, char *argv[])
     SDL_DestroyWindow(window);
     SDL_Quit();
     free(rom_buf);
-    return 0;
+
+    if (session_report_path) {
+        char report[1024];
+        uint32_t min_fill = session_audio.min_queued_bytes == UINT32_MAX
+                                ? 0 : session_audio.min_queued_bytes;
+        snprintf(report, sizeof(report),
+                 "GENESISRECOMP_SESSION {\"game\":\"%s\",\"frames\":%u,"
+                 "\"seconds\":%.9f,\"fps\":%.3f,\"frame_interval_samples\":%llu,"
+                 "\"frame_interval_min_ms\":%.3f,\"frame_interval_max_ms\":%.3f,"
+                 "\"frame_intervals_over_25ms\":%llu,\"frame_intervals_over_50ms\":%llu,"
+                 "\"audio_flushes\":%u,\"audio_underruns\":%u,\"audio_drops\":%u,"
+                 "\"audio_min_fill_ms\":%u,\"display_transitions\":%u,"
+                 "\"clean_shutdown\":true,\"exit_code\":%d}\n",
+                 g_game_spec.short_name ? g_game_spec.short_name : "game",
+                 frame_num, session_seconds,
+                 session_seconds > 0.0 ? (double)frame_num / session_seconds : 0.0,
+                 (unsigned long long)session_dt_samples,
+                 session_dt_min_ms, session_dt_max_ms,
+                 (unsigned long long)session_over_25ms,
+                 (unsigned long long)session_over_50ms,
+                 session_audio.total_flushes, session_audio.underrun_flushes,
+                 session_audio.dropped_flushes, min_fill, display_transitions,
+                 process_exit_code);
+        fputs(report, stdout);
+        fflush(stdout);
+        FILE *sf = fopen(session_report_path, "wb");
+        if (!sf) {
+            fprintf(stderr, "[LIFECYCLE] cannot write session report %s\n",
+                    session_report_path);
+            if (process_exit_code == 0) process_exit_code = 1;
+        } else {
+            fputs(report, sf);
+            fclose(sf);
+            fprintf(stderr, "[LIFECYCLE] clean shutdown; report=%s\n",
+                    session_report_path);
+        }
+    }
+    return process_exit_code;
 }

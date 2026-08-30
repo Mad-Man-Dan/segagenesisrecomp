@@ -64,6 +64,13 @@ typedef struct GameSpec {
      * coverage and keep it off so a miss stays a loud regression). */
     int         tier3_floor_default;
 
+    /* Optional speaker-delivery buffering override in milliseconds. Zero
+     * keeps the shared bridge defaults (50 ms target, prime at target).
+     * A lower positive preroll can start promptly while the controller
+     * gradually builds a larger steady reserve for game-specific load stalls. */
+    double      audio_target_ms;
+    double      audio_preroll_ms;
+
     /* Optional statically-recompiled Z80 coprocessor backend. The generated
      * function executes exactly one instruction from the explicit Z80 PC and
      * returns; the shared Genesis scheduler remains responsible for cycle

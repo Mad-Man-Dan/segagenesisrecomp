@@ -42,6 +42,9 @@ void gamepad_handle_event(const SDL_Event *ev);
  * controller is assigned to that player. */
 uint16_t gamepad_player_mask(int player);
 
+/* Host lifecycle observability used by diagnostics/tests. */
+int     gamepad_player_connected(int player);
+
 int     gamepad_turbo_held(void);
 int     gamepad_consume_quicksave(void);
 int     gamepad_consume_quickload(void);

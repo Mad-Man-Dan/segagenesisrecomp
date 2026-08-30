@@ -158,3 +158,30 @@ target_include_directories(audio_drc_test PRIVATE
 if(NOT MSVC)
     target_link_libraries(audio_drc_test PRIVATE m)
 endif()
+
+# ---------------------------------------------------------------------------
+# gamepad_hotplug_test — SDL controller add/remove/re-add lifecycle.
+# Uses SDL's virtual game-controller API, so the assignment path is covered
+# without requiring a physical controller in CI.
+# ---------------------------------------------------------------------------
+if(TARGET SDL2::SDL2)
+    add_executable(gamepad_hotplug_test
+        harness/gamepad_hotplug_test.c
+        "${CMAKE_CURRENT_LIST_DIR}/../runner/gamepad.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../runner/input_map.c"
+    )
+    genesisrecomp_register_test(gamepad_hotplug_test)
+    target_include_directories(gamepad_hotplug_test PRIVATE
+        "${CMAKE_CURRENT_LIST_DIR}/../runner"
+        "${CMAKE_CURRENT_LIST_DIR}/../runner/include"
+        "${CMAKE_CURRENT_LIST_DIR}/../runner/external/clowncommon"
+        "${CMAKE_CURRENT_LIST_DIR}/../runner/video"
+    )
+    target_link_libraries(gamepad_hotplug_test PRIVATE SDL2::SDL2main SDL2::SDL2)
+    if(WIN32)
+        add_custom_command(TARGET gamepad_hotplug_test POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:SDL2::SDL2>"
+                "$<TARGET_FILE_DIR:gamepad_hotplug_test>")
+    endif()
+endif()

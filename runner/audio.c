@@ -113,7 +113,7 @@ static uint32_t s_wav_data_bytes = 0;
 #define OUT_BUF_FRAMES 16384
 static int16_t s_out[OUT_BUF_FRAMES * 2];
 
-int audio_init(int psg_sample_rate)
+int audio_init(int psg_sample_rate, double target_ms, double preroll_ms)
 {
     SDL_AudioSpec want, got;
     SDL_memset(&want, 0, sizeof(want));
@@ -143,11 +143,11 @@ int audio_init(int psg_sample_rate)
     cfg.channels    = 2;
     cfg.source_rate = (double)psg_sample_rate; /* internal FM+PSG mix rate */
     cfg.host_rate   = (double)got.freq;         /* device rate (48 kHz) */
-    /* Prime at the normal 50 ms controller target. The former 200 ms boot
-     * cushion made early logos and attract scenes visibly lead their music.
-     * Keep pitch-preserving concealment for tiny scheduler stalls, but cap an
-     * episode so a longer stall fades instead of audibly holding a tone. */
-    cfg.preroll_ms       = 0.0;  /* 0 => target_ms (50 ms), not zero buffering */
+    /* Games with measured producer stalls may request a larger steady reserve
+     * while retaining a lower cold-start threshold. Zero keeps the shared DRC
+     * defaults, so this tuning does not silently add latency to other games. */
+    if (target_ms > 0.0) cfg.target_ms = target_ms;
+    if (preroll_ms > 0.0) cfg.preroll_ms = preroll_ms;
     cfg.stretch_enable   = 1;
     cfg.stretch_limit_ms = 20.0;
     if (rab_init(&s_bridge, &cfg) != 0) {
