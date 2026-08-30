@@ -7,9 +7,9 @@
  * Format (one directive per line, # comments, blank lines OK):
  *
  *   WAIT N               wait N frames before processing the next line
- *   HOLD <BUTTON>        start holding the button (until RELEASE or EXIT)
- *   RELEASE [BUTTON]     release one button; with no arg, release all
- *   PRESS <BUTTON> N     hold for N frames then auto-release
+ *   HOLD [P1|P2] <BUTTON>        start holding the button (defaults to P1)
+ *   RELEASE [P1|P2] [BUTTON]     release one button or all for that player
+ *   PRESS [P1|P2] <BUTTON> N     hold for N frames then auto-release
  *   ASSERT_RAM8 <addr> <value>    fail-fast if RAM byte != value
  *   WAIT_RAM8   <addr> <value>    block until RAM byte == value
  *   ASSERT_RAM16 <addr> <value>   ditto, 16-bit big-endian
@@ -66,6 +66,7 @@ void input_script_tick(uint64_t frame,
  *   bit 3 RIGHT bit 7 START
  */
 uint8_t input_script_held_mask(void);
+uint8_t input_script_player_held_mask(unsigned player_id);
 
 /* True iff the script ran an EXIT directive. The caller should
  * cleanly tear down (close TCP server, flush logs, exit). */

@@ -634,9 +634,9 @@ static cc_bool input_requested_cb(void *user_data,
      * (nobody typing ⇒ identical stream), but a human can always grab the
      * controls mid-script — previously a script parked on WAIT_RAM16 or a
      * finished TCP probe locked the keyboard out entirely. Sources can only
-     * ADD buttons, never mask a live press. P1-only (dev/regression tooling). */
-    if (player_id == 0 && input_script_active()) {
-        uint8_t mask = input_script_held_mask();
+     * ADD buttons, never mask a live press. */
+    if (input_script_active()) {
+        uint8_t mask = input_script_player_held_mask(player_id);
         switch (button_id) {
             case GB_UP:    if (mask & 0x01) return cc_true; break;
             case GB_DOWN:  if (mask & 0x02) return cc_true; break;

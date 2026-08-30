@@ -51,6 +51,7 @@ typedef struct {
     uint32_t  arg32;       /* WAIT count, RAM addr, EXIT code */
     uint32_t  arg32b;      /* RAM expected value, PRESS frames */
     uint8_t   button_mask; /* HOLD/RELEASE/PRESS button bit */
+    uint8_t   player_id;   /* 0=P1 (default), 1=P2 */
     int       line_no;     /* source line for error messages */
     char      str[260];    /* path/string argument */
 } ScriptOp;
@@ -63,7 +64,7 @@ static int      s_op_count = 0;
 static int      s_pc       = 0;     /* next op to execute */
 static int      s_active   = 0;
 static uint64_t s_wait_until_frame = 0;
-static uint8_t  s_held_mask        = 0;
+static uint8_t  s_held_mask[2]     = {0, 0};
 static int      s_exit_pending     = 0;
 static int      s_exit_code        = 0;
 static char     s_pending_screenshot[260];
@@ -72,9 +73,9 @@ static char     s_pending_load_state[260];
 static char     s_pending_ram_dump[260];
 static char     s_pending_vram_dump[260];
 
-/* PRESS auto-release tracking. Up to 4 simultaneous PRESS timers. */
-typedef struct { uint8_t mask; uint64_t release_frame; } PressTimer;
-static PressTimer s_press_timers[4];
+/* PRESS auto-release tracking. Up to 8 simultaneous PRESS timers. */
+typedef struct { uint8_t mask; uint8_t player_id; uint64_t release_frame; } PressTimer;
+static PressTimer s_press_timers[8];
 
 /* ---- Button name parsing ---- */
 
@@ -87,6 +88,13 @@ static int parse_button(const char *s, uint8_t *out) {
     else if (!_stricmp(s, "C"))     *out = 1u << 5;
     else if (!_stricmp(s, "A"))     *out = 1u << 6;
     else if (!_stricmp(s, "START")) *out = 1u << 7;
+    else return 0;
+    return 1;
+}
+
+static int parse_player(const char *s, uint8_t *out) {
+    if      (!_stricmp(s, "P1")) *out = 0;
+    else if (!_stricmp(s, "P2")) *out = 1;
     else return 0;
     return 1;
 }
@@ -111,27 +119,46 @@ static int parse_line(char *line, int line_no) {
     o->line_no = line_no;
     o->str[0]  = '\0';
 
-    char tok[64], a1[260], a2[260];
-    int n = sscanf(p, "%63s %259s %259s", tok, a1, a2);
+    char tok[64], a1[260], a2[260], a3[260];
+    int n = sscanf(p, "%63s %259s %259s %259s", tok, a1, a2, a3);
     if (n < 1) return 1;
+    o->player_id = 0;
 
     if (!_stricmp(tok, "WAIT") && n >= 2) {
         o->op    = OP_WAIT;
         o->arg32 = (uint32_t)strtoul(a1, NULL, 0);
     } else if (!_stricmp(tok, "HOLD") && n >= 2) {
-        if (!parse_button(a1, &o->button_mask)) goto bad;
+        const char *button = a1;
+        if (parse_player(a1, &o->player_id)) {
+            if (n < 3) goto bad;
+            button = a2;
+        }
+        if (!parse_button(button, &o->button_mask)) goto bad;
         o->op = OP_HOLD;
     } else if (!_stricmp(tok, "RELEASE")) {
         o->op = OP_RELEASE;
-        if (n >= 2) {
+        if (n >= 2 && parse_player(a1, &o->player_id)) {
+            if (n >= 3) {
+                if (!parse_button(a2, &o->button_mask)) goto bad;
+            } else {
+                o->button_mask = 0xFF;
+            }
+        } else if (n >= 2) {
             if (!parse_button(a1, &o->button_mask)) goto bad;
         } else {
             o->button_mask = 0xFF;  /* sentinel: release all */
         }
     } else if (!_stricmp(tok, "PRESS") && n >= 3) {
-        if (!parse_button(a1, &o->button_mask)) goto bad;
+        const char *button = a1;
+        const char *count = a2;
+        if (parse_player(a1, &o->player_id)) {
+            if (n < 4) goto bad;
+            button = a2;
+            count = a3;
+        }
+        if (!parse_button(button, &o->button_mask)) goto bad;
         o->op     = OP_PRESS;
-        o->arg32b = (uint32_t)strtoul(a2, NULL, 0);
+        o->arg32b = (uint32_t)strtoul(count, NULL, 0);
     } else if ((!_stricmp(tok, "ASSERT_RAM8") || !_stricmp(tok, "WAIT_RAM8")) && n >= 3) {
         o->op     = !_stricmp(tok, "ASSERT_RAM8") ? OP_ASSERT_RAM8 : OP_WAIT_RAM8;
         o->arg32  = (uint32_t)strtoul(a1, NULL, 16);
@@ -187,7 +214,7 @@ int input_script_load(const char *path) {
     s_pc = 0;
     s_active = 0;
     s_wait_until_frame = 0;
-    s_held_mask = 0;
+    memset(s_held_mask, 0, sizeof(s_held_mask));
     s_exit_pending = 0;
     s_pending_screenshot[0] = '\0';
     s_pending_save_state[0] = '\0';
@@ -224,9 +251,9 @@ void input_script_tick(uint64_t frame,
     if (!s_active) return;
 
     /* Auto-release any PRESS that has timed out. */
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 8; i++) {
         if (s_press_timers[i].mask && frame >= s_press_timers[i].release_frame) {
-            s_held_mask &= (uint8_t)~s_press_timers[i].mask;
+            s_held_mask[s_press_timers[i].player_id] &= (uint8_t)~s_press_timers[i].mask;
             s_press_timers[i].mask = 0;
         }
     }
@@ -245,22 +272,23 @@ void input_script_tick(uint64_t frame,
                 break;
 
             case OP_HOLD:
-                s_held_mask |= o->button_mask;
+                s_held_mask[o->player_id] |= o->button_mask;
                 s_pc++;
                 break;
 
             case OP_RELEASE:
-                if (o->button_mask == 0xFF) s_held_mask = 0;
-                else                         s_held_mask &= (uint8_t)~o->button_mask;
+                if (o->button_mask == 0xFF) s_held_mask[o->player_id] = 0;
+                else s_held_mask[o->player_id] &= (uint8_t)~o->button_mask;
                 s_pc++;
                 break;
 
             case OP_PRESS: {
-                s_held_mask |= o->button_mask;
+                s_held_mask[o->player_id] |= o->button_mask;
                 int slot = -1;
-                for (int i = 0; i < 4; i++) if (!s_press_timers[i].mask) { slot = i; break; }
+                for (int i = 0; i < 8; i++) if (!s_press_timers[i].mask) { slot = i; break; }
                 if (slot >= 0) {
                     s_press_timers[slot].mask = o->button_mask;
+                    s_press_timers[slot].player_id = o->player_id;
                     s_press_timers[slot].release_frame = frame + o->arg32b;
                 }
                 s_pc++;
@@ -383,7 +411,10 @@ void input_script_tick(uint64_t frame,
     }
 }
 
-uint8_t input_script_held_mask(void) { return s_held_mask;     }
+uint8_t input_script_held_mask(void) { return s_held_mask[0]; }
+uint8_t input_script_player_held_mask(unsigned player_id) {
+    return player_id < 2 ? s_held_mask[player_id] : 0;
+}
 bool    input_script_should_exit(void){ return s_exit_pending != 0; }
 int     input_script_exit_code  (void){ return s_exit_code;    }
 bool    input_script_active     (void){ return s_active != 0;  }
