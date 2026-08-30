@@ -537,6 +537,22 @@ static void scanline_rendered_cb(void *user_data,
             break;
         row[col] = s_cram[pixels[i]];
     }
+
+    /* A game policy may accept fewer content-margin pixels than the fixed
+     * widescreen canvas requested by the user (for example at a constrained
+     * boss camera lock). Enforce that safety pillar in the host framebuffer
+     * too: some backend paths report the full canvas while retaining pixels
+     * from the prior wider frame outside the newly reduced content block. */
+    if (ws_armed() && s_screen_width > 0) {
+        extern int g_ws_margin;
+        int pillar = ws_effective_cells() * 8 - g_ws_margin;
+        if (pillar < 0) pillar = 0;
+        if (pillar > s_screen_width / 2) pillar = s_screen_width / 2;
+        for (int x = 0; x < pillar; x++) {
+            row[x] = 0xFF000000u;
+            row[s_screen_width - 1 - x] = 0xFF000000u;
+        }
+    }
 }
 
 #include "genesis_machine.h"
@@ -552,6 +568,16 @@ static void own_scanline_sink(void *u, int line, const uint32_t *argb, int width
     uint32_t *row = s_framebuf + line * MAX_SCREEN_WIDTH;
     int n = width < MAX_SCREEN_WIDTH ? width : MAX_SCREEN_WIDTH;
     for (int x = 0; x < n; x++) row[x] = argb[x];
+    if (ws_armed() && n > 0) {
+        extern int g_ws_margin;
+        int pillar = ws_effective_cells() * 8 - g_ws_margin;
+        if (pillar < 0) pillar = 0;
+        if (pillar > n / 2) pillar = n / 2;
+        for (int x = 0; x < pillar; x++) {
+            row[x] = 0xFF000000u;
+            row[n - 1 - x] = 0xFF000000u;
+        }
+    }
 }
 
 /* Decide the widescreen margin for the frame about to run, then (a) tell the
