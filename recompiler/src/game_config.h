@@ -102,6 +102,16 @@ typedef struct { uint32_t lo; uint32_t hi; } ProtectedRange;
  *                    the paired clamp `move` so it stores the value the `cmp`
  *                    compared. Other src modes/sizes are ignored with a
  *                    diagnostic. margin 0 => identical.
+ *   WS_SITE_CMP_BOUND : at `cmpi #imm,Dn`, compare against
+ *                    `imm + scale*(g_ws_margin>>shift)` without mutating Dn.
+ *                    Used by sprite writers whose 9-bit hardware clipping
+ *                    threshold must grow with the authored output margin.
+ *   WS_SITE_CULL_WINDOW : at the `bhi` following an unsigned window test of
+ *                    `(Dn - left) > base`, replace the branch condition with
+ *                    `(uint16_t)(Dn + margin) > base + scale*margin`. With
+ *                    scale=2 this widens both edges symmetrically without
+ *                    changing Dn for later object logic. `base` is the
+ *                    original window extent.
  * `scale` (default 1) multiplies the margin for addreg/subreg — e.g. scale=2 adds
  * 2*(margin>>shift), used where a single site must widen by both margins (the ring
  * window's right edge, which also undoes the left edge's -margin).
@@ -122,6 +132,8 @@ typedef enum {
     WS_SITE_CALL_WIDEN = 6,
     WS_SITE_CULL_WINDOW_LEFT = 7,
     WS_SITE_ADDMEM = 8,
+    WS_SITE_CMP_BOUND = 9,
+    WS_SITE_CULL_WINDOW = 10,
 } WsSiteKind;
 
 typedef struct {

@@ -158,6 +158,14 @@ typedef struct GameSpec {
     void      (*on_frame_pre)(uint64_t frame_count);
     void      (*on_frame_post)(uint64_t frame_count);
 
+    /* Optional game-owned policy gate for the generic centered widescreen
+     * renderer. Receives the requested per-side pixel margin after shared
+     * mode/cap checks and returns the margin to use for this frame. Games can
+     * restrict authored widescreen to certified stages or encounters without
+     * exposing their RAM model to the shared runner. Return 0 for reference
+     * presentation; NULL accepts the shared request unchanged. */
+    int       (*widescreen_margin)(int requested_margin);
+
     /* Called every HBlank with the line number. Almost always NULL —
      * games that need per-line state should poke their own state
      * inside call_hblank instead. */

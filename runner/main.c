@@ -247,6 +247,8 @@ static int s_ws_user_on    = 0;   /* user requested widescreen */
 static int s_ws_user_cells = 8;   /* requested extra 8px cells per side */
 static int s_ws_bgdiag_on  = 0;   /* GENESIS_WS_BGDIAG: Plane B parallax diagnostic */
 static int s_ws_bar_black  = 1;   /* pillarbox bars: black (default); GENESIS_WS_BARS=backdrop for seamless */
+static int s_output_preset_w = 0; /* GENESIS_OUTPUT_PRESET=720p|1080p; 0 keeps integer-scale sizing */
+static int s_output_preset_h = 0;
 #if RECOMP_LAUNCHER
 typedef struct RuntimeUiContext {
     SDL_Window *window;
@@ -348,8 +350,36 @@ int runner_ws_set_user(int on)
 /* True while the 16:9 presentation is active: user asked for it AND the game
  * supports widescreen content. */
 static int ws_armed(void) { return s_ws_user_on && g_game_layout.ws_capable; }
+static void output_preset_setup(void)
+{
+    const char *output = getenv("GENESIS_OUTPUT_PRESET");
+    if (!output || !output[0])
+        return;
+    if (strcmp(output, "720p") == 0) {
+        s_output_preset_w = 1280;
+        s_output_preset_h = 720;
+    } else if (strcmp(output, "1080p") == 0) {
+        s_output_preset_w = 1920;
+        s_output_preset_h = 1080;
+    } else {
+        fprintf(stderr, "[VIDEO] unknown GENESIS_OUTPUT_PRESET=%s "
+                "(use 720p|1080p); keeping integer-scale window\n", output);
+    }
+}
+static int ws_effective_cells(void)
+{
+    int cells = s_ws_user_cells;
+    if (g_game_layout.ws_max_extra_cells > 0 &&
+        cells > g_game_layout.ws_max_extra_cells)
+        cells = g_game_layout.ws_max_extra_cells;
+    if (cells < 1)
+        cells = 1;
+    if (cells > 12)
+        cells = 12;
+    return cells;
+}
 /* Width (px) of the fixed widescreen output canvas the VDP emits every frame. */
-static int ws_canvas_w(void) { return 320 + 2 * s_ws_user_cells * 8; }
+static int ws_canvas_w(void) { return 320 + 2 * ws_effective_cells() * 8; }
 /* Height (px) that makes that canvas width a true 16:9 frame. The canvas is
  * physically wider (2:1 at 8 cells), so the present path scales the authentic
  * 224-line image into this height to fill the 16:9 window edge-to-edge —
@@ -538,10 +568,7 @@ static void widescreen_update_for_frame(void)
     extern int      g_ws_margin;   /* runtime widening signal (defined in glue.c) */
     int extra_px = 0;
     if (s_ws_user_on && g_game_layout.ws_capable) {
-        int cells = s_ws_user_cells;
-        if (g_game_layout.ws_max_extra_cells > 0 &&
-            cells > g_game_layout.ws_max_extra_cells)
-            cells = g_game_layout.ws_max_extra_cells;
+        int cells = ws_effective_cells();
 
         /* Eligible-mode gate: EXACT game-mode match (NO masking). Prefer the
          * [widescreen] eligible_modes list, else the gameplay level_modes. */
@@ -568,7 +595,16 @@ static void widescreen_update_for_frame(void)
             m68k_read16(g_game_layout.ws_two_player_addr) != 0)
             eligible = 0;
 
-        if (eligible) extra_px = cells * 8;
+        if (eligible) {
+            int requested_px = cells * 8;
+            extra_px = g_game_spec.widescreen_margin
+                ? g_game_spec.widescreen_margin(requested_px)
+                : requested_px;
+            if (extra_px < 0)
+                extra_px = 0;
+            if (extra_px > requested_px)
+                extra_px = requested_px;
+        }
     }
 
     gvdp_set_ws_extra(extra_px);
@@ -581,7 +617,7 @@ static void widescreen_update_for_frame(void)
      * matches the window the engine opened ((320 + 2*cells*8) * 2). 0 disarms
      * (authentic 4:3, byte-identical). Decoupled from extra_px on purpose. */
     int canvas_w = (s_ws_user_on && g_game_layout.ws_capable)
-                       ? (320 + 2 * s_ws_user_cells * 8) : 0;
+                       ? ws_canvas_w() : 0;
     gvdp_set_ws_canvas(canvas_w);
     gvdp_set_ws_bar_black(s_ws_bar_black);
 
@@ -1889,6 +1925,7 @@ int main(int argc, char *argv[])
      * on it. Only reads env + the compile-time g_game_layout, so it is safe to
      * run this early. */
     widescreen_setup();
+    output_preset_setup();
 
     /* 2× scale: 320×224 → 640×448 in authentic 4:3. When widescreen is armed
      * for a capable game, open a TRUE 16:9 window (canvas_w × 2 wide, 16:9
@@ -1902,6 +1939,10 @@ int main(int argc, char *argv[])
     if (ws_armed()) {
         win_w = ws_canvas_w() * win_scale;
         win_h = win_w * WS_ASPECT_H / WS_ASPECT_W;   /* true 16:9 */
+    }
+    if (s_output_preset_w > 0 && s_output_preset_h > 0) {
+        win_w = s_output_preset_w;
+        win_h = s_output_preset_h;
     }
     Uint32 win_flags = (benchmark_frames ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN)
                      | SDL_WINDOW_RESIZABLE;
